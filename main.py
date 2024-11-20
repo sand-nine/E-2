@@ -12,7 +12,7 @@ from dreamer.utils.utils import load_config, get_base_directory
 from dreamer.envs.envs import make_dmc_env, make_atari_env, get_env_infos
 
 
-def main(config_file):
+def main(config_file, beta):
     config = load_config(config_file)
 
     if config.environment.benchmark == "atari":
@@ -54,7 +54,7 @@ def main(config_file):
         )
     elif config.algorithm == "plan2explore":
         agent = Plan2Explore(
-            obs_shape, discrete_action_bool, action_size, writer, device, config
+            obs_shape, discrete_action_bool, action_size, writer, device, config, beta
         )
     agent.train(env)
 
@@ -67,4 +67,9 @@ if __name__ == "__main__":
         default="dmc-walker-walk.yml",
         help="config file to run(default: dmc-walker-walk.yml)",
     )
-    main(parser.parse_args().config)
+    parser.add_argument(
+        "--beta",
+        type=float,
+        default=1.0,
+    )
+    main(parser.parse_args().config, parser.parse_args().beta)

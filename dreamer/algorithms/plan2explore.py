@@ -23,6 +23,7 @@ class Plan2Explore(Dreamer):
         writer,
         device,
         config,
+        beta,
     ):
         super().__init__(
             observation_shape, discrete_action_bool, action_size, writer, device, config
@@ -53,6 +54,8 @@ class Plan2Explore(Dreamer):
         self.intrinsic_actor.intrinsic = True
         self.actor.intrinsic = False
 
+        self.beta = beta
+
     def train(self, env):
         if len(self.buffer) < 1:
             self.environment_interaction(
@@ -72,6 +75,10 @@ class Plan2Explore(Dreamer):
                     self.critic_optimizer,
                     posteriors,
                     deterministics,
+                    explore_and_exploit=True,
+                    extra_info={
+                        "intrinsic_actor": self.intrinsic_actor
+                    }
                 )
 
                 self.behavior_learning(
@@ -81,6 +88,8 @@ class Plan2Explore(Dreamer):
                     self.intrinsic_critic_optimizer,
                     posteriors,
                     deterministics,
+                    explore_and_exploit=False,
+                    extra_info=None
                 )
 
             self.environment_interaction(
@@ -202,7 +211,7 @@ class Plan2Explore(Dreamer):
         self.one_step_models_optimizer.step()
 
     def behavior_learning(
-        self, actor, critic, actor_optimizer, critic_optimizer, states, deterministics
+        self, actor, critic, actor_optimizer, critic_optimizer, states, deterministics, explore_and_exploit=False, extra_info=None
     ):
         """
         #TODO : last posterior truncation(last can be last step)
@@ -226,28 +235,48 @@ class Plan2Explore(Dreamer):
             actor_optimizer,
             critic_optimizer,
             self.behavior_learning_infos.get_stacked(),
+            explore_and_exploit=explore_and_exploit,
+            extra_info=extra_info
         )
 
     def _agent_update(
-        self, actor, critic, actor_optimizer, critic_optimizer, behavior_learning_infos
+        self, actor, critic, actor_optimizer, critic_optimizer, behavior_learning_infos, explore_and_exploit=False, extra_info=None
     ):
-        if actor.intrinsic:
-            predicted_feature_means = [
-                x(
-                    behavior_learning_infos.actions,
-                    behavior_learning_infos.priors,
-                    behavior_learning_infos.deterministics,
-                ).mean
-                for x in self.one_step_models
-            ]
-            predicted_feature_mean_stds = torch.stack(predicted_feature_means, 0).std(0)
+        if not explore_and_exploit:
+            if actor.intrinsic:
+                predicted_feature_means = [
+                    x(
+                        behavior_learning_infos.actions,
+                        behavior_learning_infos.priors,
+                        behavior_learning_infos.deterministics,
+                    ).mean
+                    for x in self.one_step_models
+                ]
+                predicted_feature_mean_stds = torch.stack(predicted_feature_means, 0).std(0)
 
-            predicted_rewards = predicted_feature_mean_stds.mean(-1, keepdims=True)
+                predicted_rewards = predicted_feature_mean_stds.mean(-1, keepdims=True)
+
+            else:
+                predicted_rewards = self.reward_predictor(
+                    behavior_learning_infos.priors, behavior_learning_infos.deterministics
+                ).mean
 
         else:
             predicted_rewards = self.reward_predictor(
-                behavior_learning_infos.priors, behavior_learning_infos.deterministics
+                behavior_learning_infos.priors, behavior_learning_infos.deterministics,
             ).mean
+            intrinsic_actor = extra_info["intrinsic_actor"]
+            actor_dist = intrinsic_actor(
+                behavior_learning_infos.priors,
+                behavior_learning_infos.deterministics,
+                get_dist=True
+            )
+            actions = behavior_learning_infos.actions
+            actions = torch.clamp(actions, min=-0.999, max=0.999)
+            log_prob_actions = actor_dist.log_prob(actions)
+            prob_actions = torch.exp(log_prob_actions).unsqueeze(-1)
+            predicted_rewards *= torch.exp(-self.beta * prob_actions).detach()
+
         values = critic(
             behavior_learning_infos.priors, behavior_learning_infos.deterministics
         ).mean

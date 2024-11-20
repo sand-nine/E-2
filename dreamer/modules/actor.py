@@ -23,11 +23,14 @@ class Actor(nn.Module):
             action_size,
         )
 
-    def forward(self, posterior, deterministic):
+    def forward(self, posterior, deterministic, get_dist=False):
         x = torch.cat((posterior, deterministic), -1)
         x = self.network(x)
+
         if self.discrete_action_bool:
             dist = torch.distributions.OneHotCategorical(logits=x)
+            if get_dist:
+                return dist
             action = dist.sample() + dist.probs - dist.probs.detach()
         else:
             dist = create_normal_dist(
@@ -38,5 +41,7 @@ class Actor(nn.Module):
                 activation=torch.tanh,
             )
             dist = torch.distributions.TransformedDistribution(dist, TanhTransform())
+            if get_dist:
+                return torch.distributions.Independent(dist, 1)
             action = torch.distributions.Independent(dist, 1).rsample()
         return action
